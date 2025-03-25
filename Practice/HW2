@@ -1,0 +1,564 @@
+#include "openFileDialog.h" // OpenFileDialog 헤더 포함
+#include "saveFileDialog.h" // SaveFileDialog 헤더 포함
+#include <opencv2/opencv.hpp>
+#include <GL/glut.h>
+#include <GL/glui.h>
+#include <iostream>
+#include <fstream>
+
+// videocapture 속성 
+// set(숫자, posF); 그 위치에 파일 포인터를 갖다놓음 
+// 동영상 열면 fp가 맨 앞에 존재 
+// framecounter라는 변수 생성 
+// 파일 열면 framecounter = 0으로 설정 
+// play 버튼을 누르면 framecounter를 1씩 증가시켜야됨 
+// fastfoward를 누르면 하나 읽고 framecounter를 5를 증가 시킴 
+// 버튼에 framecounter 증가 설정 
+// prop도 가져와야됨 fp랑 동기화 시켜야됨 
+// input에 4개, output에 4개 (input은 안바꿔둠) 
+// 1세트가 8바이트 , 64byte (하나 건너뛸 때마다 64byte) 
+// fseek (이진파일이니깐) 
+// fseek(fp  , fp * 64, SEEK_SET)
+// save 체크를 하면 videowrite?
+//  정지 버튼(정지 상태에서 누르면 다시 재생)
+/*
+맨 앞으로
+frameskip수 만큼 빨리 뒤로
+뒤로 재생
+누를 때마다 한장씩 뒤로
+누를 때마다 한장씩 앞으로
+frameskip수 만큼 빨리 앞으로
+맨 끝으로
+*/
+
+
+
+using namespace std;
+using namespace cv;
+int main_window;
+Mat resizedInputFrame;
+GLUI_EditText* outFilename;
+
+// Save Control 
+int save_button = 0;   //save를 결정하는 체크박스 변수 
+int frameskip = 5;
+int Save_button = 0;
+int framecounter;
+
+// window size control 
+float Re_size = 1.0f;
+
+// Playmode Control 
+int playmode = 0;
+
+// playtime Control 
+int playtime = 30;
+int temp_playmode = 0;
+int lastFrame;
+//char OutputFilename;
+GLUI_Spinner* playtime_spinner;
+GLUI_Spinner* FrameSkip_spinner;
+GLUI_Spinner* Resize_spinner;
+
+vector<Point2f> inputPoint, outputPoint;
+vector <int> DataBuffer;        // data 버퍼 
+
+
+VideoCapture cap;           // 동영상 파일
+VideoWriter videoWriter;    // 저장용
+Mat frame, outputFrame;     // 원본 및 출력 프레임
+string Filename;            // 동영상 파일 이름
+string Prop_Filename;      // Prop 파일 이름 
+FILE* fp = NULL;            // prop.bin 파일 포인터
+
+//GLUI_EditText* Filename;
+std::string OutputFilename = "Output.avi";
+double currentFramePosition = 0;
+// `idle` 함수
+
+void Perspective(const Mat& input, Mat& output, int frameIndex);
+void file(int b);
+void save(int width, int height) {
+    if (save_button == 1) { // Save 버튼 체크됨
+        if (!videoWriter.isOpened()) { // VideoWriter가 열려있지 않다면 초기화
+            videoWriter.open(OutputFilename, VideoWriter::fourcc('M', 'J', 'P', 'G'), 30, Size(width, height), true);
+            if (!videoWriter.isOpened()) {
+                cerr << "Save error" << endl;
+                save_button = 0; // 초기화 실패 시 저장 비활성화
+                return;
+            }
+        }
+    } 
+    else { // Save 버튼 언체크됨
+        if (videoWriter.isOpened()) { // VideoWriter가 열려있다면 닫기
+            videoWriter.release();
+            cout << "save stop " << OutputFilename << endl;
+        }
+    }
+}
+void idle() {
+    Mat inputF, outputF;
+    // 동영상이 열려있는 상태에서 cap 
+     // cap에서 이미지 파일을 읽어오는 건 idle 함수에서 해야됨 
+     // playmode에 관한 스위치 문을 작성 
+     // imshow 하기 전에 resize(frame, frame,Size(), 비율, 비율)
+     // imshow input, output 
+     // save 버튼이 체크되어 있으면 videowrite사용 
+     // 체크했을 때는 save를 눌러서 열어주고 언체크했을 때는 save 불러서 닫아줌 
+     // 다 끝나고 나올 때 waitKey를 사용
+    namedWindow("Input", 1);
+    namedWindow("Output", 2);
+    VideoCapture cap(Filename);
+
+    cap.set(CAP_PROP_POS_FRAMES, currentFramePosition);
+
+    if (cap.isOpened()) {
+        //Re_size = Resize_spinner->get_float_val();
+
+        if (save_button == 1) {
+            save(outputFrame.cols, outputFrame.rows); // VideoWriter 열기
+            if (videoWriter.isOpened()) {
+                videoWriter.write(frame); // 현재 프레임 저장
+                //cout << "Frame saved to video file." << endl;
+            }
+        }
+        else if (save_button == 0) {
+            save(outputFrame.cols, outputFrame.rows); // VideoWriter 닫기
+        }
+
+        switch (playmode) {
+        case 0: // 정지
+            break;
+
+        case 1: // 맨 앞으로 
+            currentFramePosition = 0;
+            cap.set(CAP_PROP_POS_FRAMES, currentFramePosition);
+            cap >> frame; // 프레임 읽기
+            resize(frame, resizedInputFrame, Size(), Re_size, Re_size, INTER_LINEAR); 
+            resize(frame, outputFrame, Size(), Re_size, Re_size, INTER_LINEAR);      
+            resizeWindow("Input", static_cast<int>(frame.cols * Re_size), static_cast<int>(frame.rows * Re_size));
+            resizeWindow("Output", static_cast<int>(frame.cols * Re_size), static_cast<int>(frame.rows * Re_size));
+            Perspective(frame, outputFrame, currentFramePosition);
+            imshow("Input", resizedInputFrame);
+            imshow("Output", outputFrame);
+            break;
+        case 2: // 프레임 뒤로 건너뛰기 
+            currentFramePosition -= (frameskip + 1);
+            cap.set(CAP_PROP_POS_FRAMES, currentFramePosition);
+            cap >> frame; // 프레임 읽기
+            cap >> outputFrame;
+            while (playmode == 2) {
+                //Mat inputF, outputF;
+                resize(frame, resizedInputFrame, Size(), Re_size, Re_size, INTER_LINEAR); 
+                resize(frame, outputFrame, Size(), Re_size, Re_size, INTER_LINEAR);      
+                resizeWindow("Input", static_cast<int>(frame.cols * Re_size), static_cast<int>(frame.rows * Re_size));
+                resizeWindow("Output", static_cast<int>(frame.cols * Re_size), static_cast<int>(frame.rows * Re_size));
+                Perspective(frame, outputFrame, currentFramePosition);
+                imshow("Input", resizedInputFrame);
+                imshow("Output", outputFrame);
+                if (save_button == 1 && videoWriter.isOpened()) {
+                    videoWriter.write(outputFrame); // 저장
+                }
+                waitKey(playtime);
+                currentFramePosition = cap.get(CAP_PROP_POS_FRAMES);
+
+                break;
+            }
+        case 3: // 역재생
+            if (currentFramePosition > 0) {
+                currentFramePosition -= 1;
+                cap.set(CAP_PROP_POS_FRAMES, currentFramePosition);
+                cap >> frame;
+                cap >> outputFrame;
+                if (!frame.empty()) {
+                    //Mat inputF, outputF;
+                    resize(frame, resizedInputFrame, Size(), Re_size, Re_size, INTER_LINEAR); 
+                    resize(frame, outputFrame, Size(), Re_size, Re_size, INTER_LINEAR);     
+                    resizeWindow("Input", static_cast<int>(frame.cols * Re_size), static_cast<int>(frame.rows * Re_size));
+                    resizeWindow("Output", static_cast<int>(frame.cols * Re_size), static_cast<int>(frame.rows * Re_size));
+                    Perspective(frame, outputFrame, currentFramePosition);
+                    imshow("Input", resizedInputFrame);
+                    imshow("Output", outputFrame);
+                    if (save_button == 1 && videoWriter.isOpened()) {
+                        videoWriter.write(outputFrame); // 저장
+                    }
+                }
+                else {
+                    playmode = 0;
+                }
+            }
+            else {
+                playmode = 0;
+            }
+            waitKey(playtime);
+            break;
+        case 4:// 한 프레임 뒤로 
+            cap.set(CAP_PROP_POS_FRAMES, currentFramePosition);
+            cap >> frame; // 프레임 읽기
+            cap >> outputFrame;
+            //Mat inputF, outputF;
+            resize(frame, resizedInputFrame, Size(), Re_size, Re_size, INTER_LINEAR); 
+            resize(frame, outputFrame, Size(), Re_size, Re_size, INTER_LINEAR);      
+            resizeWindow("Input", static_cast<int>(frame.cols * Re_size), static_cast<int>(frame.rows * Re_size));
+            resizeWindow("Output", static_cast<int>(frame.cols * Re_size), static_cast<int>(frame.rows * Re_size));
+            Perspective(frame, outputFrame, currentFramePosition);
+            imshow("Input", resizedInputFrame);
+            imshow("Output", outputFrame);
+            if (save_button == 1 && videoWriter.isOpened()) {
+                videoWriter.write(outputFrame); // 저장
+            }
+
+            break;
+
+        case 5:// 한 프레임 앞으로 
+            cap.set(CAP_PROP_POS_FRAMES, currentFramePosition);
+            cap >> frame; // 프레임 읽기
+            cap >> outputFrame;
+            //Mat inputF, outputF;
+            resize(frame, resizedInputFrame, Size(), Re_size, Re_size, INTER_LINEAR); 
+            resize(frame, outputFrame, Size(), Re_size, Re_size, INTER_LINEAR);      
+            resizeWindow("Input", static_cast<int>(frame.cols* Re_size), static_cast<int>(frame.rows* Re_size));
+            resizeWindow("Output", static_cast<int>(frame.cols* Re_size), static_cast<int>(frame.rows* Re_size));
+            Perspective(frame, outputFrame, currentFramePosition);
+            imshow("Input", resizedInputFrame);
+            imshow("Output", outputFrame);
+            if (save_button == 1 && videoWriter.isOpened()) {
+                videoWriter.write(outputFrame); // 저장
+            }
+            waitKey(playtime);
+            break;
+
+        case 6: // 재생 
+            //cap >> frame; // 프레임 읽기
+            currentFramePosition += 1;
+            cap.set(CAP_PROP_POS_FRAMES, currentFramePosition);
+            cap >> frame;
+            cap >> outputFrame;
+            if (!frame.empty()) {
+                //Mat inputF, outputF;
+                resize(frame, resizedInputFrame, Size(), Re_size, Re_size, INTER_LINEAR); 
+                resize(frame, outputFrame, Size(), Re_size, Re_size, INTER_LINEAR);     
+                resizeWindow("Input", static_cast<int>(frame.cols * Re_size), static_cast<int>(frame.rows * Re_size));
+                resizeWindow("Output", static_cast<int>(frame.cols * Re_size), static_cast<int>(frame.rows * Re_size));
+                Perspective(frame, outputFrame, currentFramePosition);
+                imshow("Input", resizedInputFrame);
+                imshow("Output", outputFrame);
+                if (save_button == 1 && videoWriter.isOpened()) {
+                    videoWriter.write(outputFrame); // 저장
+                }
+
+            }
+            waitKey(playtime);
+            break;
+        case 7: // 프레임 앞으로 건너뛰기  
+
+            currentFramePosition += frameskip;
+            cap.set(CAP_PROP_POS_FRAMES, currentFramePosition);
+            cap >> frame; // 프레임 읽기
+            
+                //Mat frame;
+                cap >> frame;   // 동영상에서 하나의 프레임을 추출한다. 
+                cap >> outputFrame;
+                resize(frame, resizedInputFrame, Size(), Re_size, Re_size, INTER_LINEAR); 
+                resize(frame, outputFrame, Size(), Re_size, Re_size, INTER_LINEAR);      
+                resizeWindow("Input", static_cast<int>(frame.cols* Re_size), static_cast<int>(frame.rows* Re_size));
+                resizeWindow("Output", static_cast<int>(frame.cols* Re_size), static_cast<int>(frame.rows* Re_size));
+                Perspective(frame, outputFrame, currentFramePosition);
+                imshow("Input", resizedInputFrame);
+                imshow("Output", outputFrame);
+
+                if (save_button == 1 && videoWriter.isOpened()) {
+                    videoWriter.write(outputFrame); // 저장
+                }
+                waitKey(playtime);
+                currentFramePosition = cap.get(CAP_PROP_POS_FRAMES);
+                break;
+            
+
+        case 8: // 맨 앞으로 
+            lastFrame = static_cast<int>(cap.get(CAP_PROP_FRAME_COUNT)) - 1;
+            cap.set(CAP_PROP_POS_FRAMES, lastFrame);
+            cap >> frame;   // 동영상에서 하나의 프레임을 추출한다. 
+            cap >> outputFrame;
+            resize(frame, resizedInputFrame, Size(), Re_size, Re_size, INTER_LINEAR);
+            resize(frame, outputFrame, Size(), Re_size, Re_size, INTER_LINEAR);
+            resizeWindow("Input", static_cast<int>(frame.cols* Re_size), static_cast<int>(frame.rows* Re_size));
+            resizeWindow("Output", static_cast<int>(frame.cols* Re_size), static_cast<int>(frame.rows* Re_size));
+            Perspective(frame, outputFrame, lastFrame);
+            imshow("Input", resizedInputFrame);
+            imshow("Output", outputFrame);
+
+            break;
+        default:
+            cerr << "Invalid playmode." << endl;
+        }
+    }
+    //GLUI_Master.set_glutIdleFunc(idle);
+
+}
+void updateResize(int) {
+    if (!frame.empty()) {
+
+      
+    }
+}
+
+void prop(int) {
+    // fopen 사용
+    // 전역변수 fp 만들고 NULL로 초기화 시켜놓기  
+    // fp가 열려있다면 닫아주고 열기 
+    // fp = fopen("filename","rb");
+    OpenFileDialog* openFileDialog = new OpenFileDialog();
+    if (openFileDialog->ShowDialog()) {
+        Prop_Filename = openFileDialog->FileName;
+        if (fopen_s(&fp, Prop_Filename.c_str(), "rb") != 0) {
+            cerr << "Bin File error" << endl;
+        }
+        else {
+            cout << "Prop file loaded: " << Prop_Filename << endl;
+        }
+    }
+}
+
+// 파일 열기 콜백 함수
+void file(int b) {
+
+    // 파일 열기 
+    // 열기 전에 열려있는 애가 있는지 확인하고 있다면 닫아주기 
+    // idle 함수 on
+    // 버튼마다 숫자 설정해놓기 (Playmode)
+    if (cap.isOpened()) {
+        cap.release(); // 기존 동영상 파일 닫기
+    }
+
+    if (b == 9) {
+        OpenFileDialog* openFileDialog = new OpenFileDialog();
+        if (openFileDialog->ShowDialog()) {
+            Filename = openFileDialog->FileName;
+            currentFramePosition = 0; // 시작 프레임으로 설정
+        }
+    }
+    switch (b) {
+    case 0: // 정지
+        cout << "button 0 " << endl;
+        //playmode = 0;
+        if (playmode != 0) {
+            temp_playmode = playmode;
+            playmode = 0;
+        }
+        else if (playmode == 0) {
+            
+            playmode = temp_playmode;
+        }
+        break;
+
+    case 1: // 맨 앞으로 
+        cout << "button 1" << endl;
+        currentFramePosition = 0;
+        playmode = 1;
+        break;
+    case 2: // 뒤로 프레임 건너뛰기
+        cout << "button 2" << endl;
+        currentFramePosition -= (frameskip + 1); // 프레임 건너뛰기
+        if (currentFramePosition == 0) break; // 경계 조건
+        playmode = 2;
+        break;
+
+    case 3: // 뒤로 재생
+        cout << "button 3" << endl;
+        currentFramePosition -= 1;
+        playmode = 3;
+        break;
+    case 4: // 뒤로 한 프레임 
+        cout << "button 4" << endl;
+        currentFramePosition -= 1; // 한 프레임 뒤로 이동
+        if (currentFramePosition < 0) currentFramePosition = 0; // 경계 조건
+        playmode = 4;
+        break;
+
+    case 5: // 앞으로 한 프레임 
+        cout << "button 5" << endl;
+        currentFramePosition += 1; // 한 프레임 앞으로 이동
+        playmode = 5;
+        break;
+    case 6: // 재생 
+        cout << "button 6" << endl;
+        playmode = 6;
+        //currentFramePosition = cap.get(CAP_PROP_POS_FRAMES);
+        break;
+
+    case 7: // 앞으로 프레임 건너뛰기 
+        cout << "button 7" << endl;
+        currentFramePosition += frameskip; // 프레임 건너뛰기
+        playmode = 7;
+        break;
+    case 8: // 맨 끝으로 
+        cout << "button 8" << endl;
+        //currentFramePosition = cap.get(CAP_PROP_FRAME_COUNT) - 1;
+        playmode = 8;
+        break;
+
+    default:
+        cerr << "" << endl;
+    }
+
+    GLUI_Master.set_glutIdleFunc(idle);
+}
+
+void readBinFile(int) {
+
+    OpenFileDialog* openPopbFileDialog = new OpenFileDialog();
+    if (openPopbFileDialog->ShowDialog()) {
+        Prop_Filename = openPopbFileDialog->FileName;
+        currentFramePosition = 0; // 시작 프레임으로 설정
+    }
+
+    ifstream propfile(Prop_Filename, ios::binary);
+    if (!propfile.is_open()) {
+        cerr << "Bin File error" << endl;
+        return;
+    }
+
+    propfile.seekg(0, ios::end);
+    long fileSize = propfile.tellg();
+    propfile.seekg(0, ios::beg);
+
+
+    // 파일에서 데이터를 읽어 버퍼에 저장
+    DataBuffer.resize(fileSize / sizeof(int)); // 전체 파일 읽기
+    propfile.read(reinterpret_cast<char*>(DataBuffer.data()), fileSize);
+    propfile.close();
+
+}
+
+
+void Perspective(const Mat& input, Mat& output, int frameIndex) {
+    int pointDataSize = 8; 
+    int dataOffset = frameIndex * pointDataSize;
+
+    if (DataBuffer.size() < dataOffset + pointDataSize) {
+        cerr << "Buffer error " << frameIndex <<  endl;
+        return;
+    }
+
+    inputPoint.clear();
+    outputPoint.clear();
+    for (int i = 0; i < 4; ++i) {
+        int x = DataBuffer[dataOffset + i * 2];
+        int y = DataBuffer[dataOffset + i * 2 + 1];
+        inputPoint.emplace_back(static_cast<float>(x), static_cast<float>(y));
+    }
+    for (int i = 4; i < 8; ++i) {
+        int x = DataBuffer[dataOffset + i * 2];
+        int y = DataBuffer[dataOffset + i * 2 + 1];
+        outputPoint.emplace_back(static_cast<float>(x), static_cast<float>(y));
+    }
+    Mat perspectiveMatrix = getPerspectiveTransform(inputPoint, outputPoint);
+    if (perspectiveMatrix.empty()) {
+        output = input.clone(); 
+        return;
+    }
+
+    warpPerspective(input, output, perspectiveMatrix, input.size(), INTER_LINEAR, BORDER_CONSTANT, Scalar(0, 0, 0));
+    if (output.empty()) {
+        cerr << "Perspective error" << endl;
+        output = input.clone(); 
+        return;
+    }
+
+    for (const auto& point : inputPoint) {
+        cerr << "(" << point.x << "," << point.y << ") "<<endl;
+    }
+    cerr << endl;
+
+    for (const auto& point : outputPoint) {
+        cerr << "(" << point.x << "," << point.y << ") "<<endl;
+    }
+    cerr << endl;
+
+}
+
+// 종료 콜백 함수
+void quit(int) {
+    if (cap.isOpened()) cap.release();
+    if (videoWriter.isOpened()) videoWriter.release();
+    exit(0);
+}
+
+int main(int argc, char* argv[]) {
+    // main에서는 idle 함수를 사용하지 않음
+    glutInit(&argc, argv);
+    GLUI* glui = GLUI_Master.create_glui("OpenCV & Glui", 0);
+    main_window = glui->get_glut_window_id();
+
+    // File & Prop Button
+    GLUI_Panel* File_panel = glui->add_panel("", GLUI_PANEL_NONE);
+    glui->add_button_to_panel(File_panel, "File", 9, (GLUI_CB)file);
+    new GLUI_Column(File_panel, false);
+    glui->add_button_to_panel(File_panel, "Prop", 0, (GLUI_CB)readBinFile);
+
+    //Play Button
+    GLUI_Panel* Play_panel = glui->add_panel("", GLUI_PANEL_NONE);
+    GLUI_Button* button0 = glui->add_button_to_panel(Play_panel, "||", 0, (GLUI_CB)file);
+    button0->set_w(38);
+    new GLUI_Column(Play_panel, false);
+    GLUI_Button* button1 = glui->add_button_to_panel(Play_panel, "|<", 1, (GLUI_CB)file);
+    button1->set_w(38);
+    new GLUI_Column(Play_panel, false);
+    GLUI_Button* button2 = glui->add_button_to_panel(Play_panel, "<<", 2, (GLUI_CB)file);
+    button2->set_w(38);
+    new GLUI_Column(Play_panel, false);
+    GLUI_Button* button3 = glui->add_button_to_panel(Play_panel, "<", 3, (GLUI_CB)file);
+    button3->set_w(38);
+    new GLUI_Column(Play_panel, false);
+    GLUI_Button* button4 = glui->add_button_to_panel(Play_panel, "<||", 4, (GLUI_CB)file);
+    button4->set_w(38);
+    new GLUI_Column(Play_panel, false);
+    GLUI_Button* button5 = glui->add_button_to_panel(Play_panel, "||>", 5, (GLUI_CB)file);
+    button5->set_w(38);
+    new GLUI_Column(Play_panel, false);
+    GLUI_Button* button6 = glui->add_button_to_panel(Play_panel, ">", 6, (GLUI_CB)file);
+    button6->set_w(38);
+    new GLUI_Column(Play_panel, false);
+    GLUI_Button* button7 = glui->add_button_to_panel(Play_panel, ">>", 7, (GLUI_CB)file);
+    button7->set_w(38);
+    new GLUI_Column(Play_panel, false);
+    GLUI_Button* button8 = glui->add_button_to_panel(Play_panel, ">|", 8, (GLUI_CB)file);
+    button8->set_w(38);
+    new GLUI_Column(Play_panel, false);
+
+    // Playtime & Frame Skip
+    GLUI_Panel* Frame_panel = glui->add_panel("", GLUI_PANEL_NONE);
+    playtime_spinner = glui->add_spinner_to_panel(Frame_panel, "Play Time", GLUI_SPINNER_INT, &playtime);
+    playtime_spinner->set_int_limits(1, 1000);
+    new GLUI_Column(Frame_panel, false);
+    FrameSkip_spinner = glui->add_spinner_to_panel(Frame_panel, "Frame Skip", GLUI_SPINNER_INT, &frameskip);
+    FrameSkip_spinner->set_int_limits(1, 100);
+
+    glui->add_separator();
+
+    // Resize & Filename
+    GLUI_Panel* Resize_panel = glui->add_panel("", GLUI_PANEL_NONE);
+    Resize_spinner = glui->add_spinner_to_panel(Resize_panel, "Resize", GLUI_SPINNER_FLOAT, &Re_size, 0, (GLUI_CB)updateResize);
+    Resize_spinner->set_float_limits(0.1, 100);
+    Resize_spinner->set_speed(.05);
+    new GLUI_Column(Resize_panel, false);
+
+    outFilename = glui->add_edittext_to_panel(Resize_panel, "Filename", OutputFilename);
+    new GLUI_Column(Resize_panel, false);
+    new GLUI_Checkbox(Resize_panel, "Save", &save_button);
+    glui->add_separator();
+
+    //Quit
+    GLUI_Panel* Quit_panel = glui->add_panel("", GLUI_PANEL_NONE);
+    glui->add_button_to_panel(Quit_panel, "Quit", 0, (GLUI_CB)exit);
+
+
+    glui->set_main_gfx_window(main_window);
+    GLUI_Master.set_glutIdleFunc(NULL);
+    glutMainLoop();
+
+    return 0;
+
+
+}
